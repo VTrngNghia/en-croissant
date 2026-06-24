@@ -3,6 +3,7 @@ import { searchPosition } from "./db";
 import { getNodeAtPath, type TreeNode, treeIterator, getBoardState } from "./treeReducer";
 import { TreeStoreState } from "@/state/store/tree";
 import { memoize } from "proxy-memoize";
+import { Annotation } from "./annotation";
 
 export type PositionMove = {
     san: string;
@@ -15,6 +16,7 @@ export type PositionMove = {
     inRepertoire: boolean;
     coverage: number;
     path: number[];
+    annotations: Annotation[];
 };
 
 export async function fetchPositionMoves(
