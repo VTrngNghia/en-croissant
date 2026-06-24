@@ -1,11 +1,11 @@
 import { Group, Progress, Text } from "@mantine/core";
 import { useAtom } from "jotai";
 import { DataTable } from "mantine-datatable";
-import { memo, useContext } from "react";
+import { memo, useContext, useMemo } from "react";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { moveNotationTypeAtom } from "@/state/atoms";
-import { addPieceSymbol } from "@/utils/annotation";
+import { addPieceSymbol, Annotation, ANNOTATION_INFO } from "@/utils/annotation";
 import type { Opening } from "@/utils/db";
 import { formatNumber } from "@/utils/format";
 import classes from "./OpeningsTable.module.css";
@@ -14,6 +14,7 @@ function OpeningsTable({ openings, loading }: { openings: Opening[]; loading: bo
   const store = useContext(TreeStateContext)!;
   const makeMove = useStore(store, (s) => s.makeMove);
   const [moveNotationType] = useAtom(moveNotationTypeAtom);
+  const currentNode = useStore(store, (s) => s.currentNode());
 
   const whiteTotal = openings?.reduce((acc, curr) => acc + curr.white, 0);
   const blackTotal = openings?.reduce((acc, curr) => acc + curr.black, 0);
@@ -31,6 +32,15 @@ function OpeningsTable({ openings, loading }: { openings: Opening[]; loading: bo
       },
     ];
   }
+  const annotationMap = useMemo(() => {
+    const map = new Map<string, Annotation[]>();
+    for (const child of currentNode.children) {
+      if (child.san && child.annotations.length > 0) {
+        map.set(child.san, child.annotations);
+      }
+    }
+    return map;
+  }, [currentNode.children]);
 
   return (
     <DataTable
@@ -59,8 +69,13 @@ function OpeningsTable({ openings, loading }: { openings: Opening[]; loading: bo
                   Game end
                 </Text>
               );
+            const annotations = annotationMap.get(move);
+            const color = annotations ? ANNOTATION_INFO[annotations[0]]?.color : undefined;
             return (
-              <Text fz="sm">{moveNotationType === "symbols" ? addPieceSymbol(move) : move}</Text>
+              <Text fz="sm" c={color}>
+                {moveNotationType === "symbols" ? addPieceSymbol(move) : move}
+                {annotations && annotations.join("")}
+              </Text>
             );
           },
         },
