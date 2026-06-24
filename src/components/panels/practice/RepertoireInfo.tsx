@@ -525,12 +525,12 @@ function MovesView({
   const [showRare, setShowRare] = useState(false);
 
   const relevantMoves = useMemo(
-    () => (isUserTurn ? [] : positionMoves.filter((m) => m.games >= minGames)),
+    () => (isUserTurn ? [] : positionMoves.filter((m) => m.inRepertoire || m.games >= minGames)),
     [isUserTurn, positionMoves, minGames],
   );
 
   const rareMoves = useMemo(
-    () => (isUserTurn ? [] : positionMoves.filter((m) => m.games < minGames)),
+    () => (isUserTurn ? [] : positionMoves.filter((m) => !m.inRepertoire && m.games < minGames)),
     [isUserTurn, positionMoves, minGames],
   );
 
@@ -853,7 +853,7 @@ function MoveRow({
           </Tooltip>
           {showCoverage && (
             <Box w={100}>
-              {dimmed || move.games < minGames ? (
+              {dimmed ? (
                 <Tooltip label={t("Board.Practice.Build.RareTooltip")} withArrow>
                   <Text fz="xs" c="dimmed" ta="center">
                     N/A
