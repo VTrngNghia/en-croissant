@@ -40,6 +40,7 @@ import {
 } from "@/utils/repertoire";
 import { getBoardState, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
+import { Annotation, ANNOTATION_INFO } from "@/utils/annotation";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
   const moveNum = Math.ceil(halfMoves / 2);
@@ -210,6 +211,8 @@ function RepertoireInfo() {
       const games = dbMove ? dbMove.white + dbMove.draw + dbMove.black : 0;
       const coveragePath = targetPath.join(",");
       const coverage = coverageMap.get(coveragePath) ?? 0;
+      const targetNode = getNodeAtPath(root, targetPath);
+      const annotations = targetNode?.annotations ?? [];
       seenSans.add(san);
       allMoves.push({
         san,
@@ -222,6 +225,7 @@ function RepertoireInfo() {
         inRepertoire: true,
         coverage,
         path: targetPath,
+        annotations,
       });
     }
 
@@ -240,12 +244,13 @@ function RepertoireInfo() {
           inRepertoire: false,
           coverage: 0,
           path: [],
+          annotations: [],
         });
       }
     }
 
     return allMoves.sort((a, b) => b.frequency - a.frequency);
-  }, [currentNode.fen, dbMovesMap, transpositionMoves, coverageMap]);
+  }, [currentNode.fen, dbMovesMap, transpositionMoves, coverageMap, root]);
 
   const isUserTurn =
     orientation === "white" ? currentNode.halfMoves % 2 === 0 : currentNode.halfMoves % 2 === 1;
@@ -341,24 +346,24 @@ function RepertoireInfo() {
             <Stack gap={4}>
               {(orientation === "white"
                 ? [
-                    {
-                      name: "Italian Game",
-                      moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
-                    },
-                    {
-                      name: "Ruy Lopez",
-                      moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
-                    },
-                    { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
-                  ]
+                  {
+                    name: "Italian Game",
+                    moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+                  },
+                  {
+                    name: "Ruy Lopez",
+                    moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
+                  },
+                  { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
+                ]
                 : [
-                    { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
-                    { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
-                    {
-                      name: "Najdorf",
-                      moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
-                    },
-                  ]
+                  { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
+                  { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
+                  {
+                    name: "Najdorf",
+                    moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
+                  },
+                ]
               ).map((preset) => (
                 <Button
                   key={preset.name}
@@ -435,6 +440,7 @@ type TResponse = {
   white: number;
   draw: number;
   black: number;
+  annotations: Annotation[];
 };
 
 function MovesView({
@@ -498,6 +504,7 @@ function MovesView({
               white: dbEntry?.white ?? 0,
               draw: dbEntry?.draw ?? 0,
               black: dbEntry?.black ?? 0,
+              annotations: child.annotations || [],
             });
           }
         }
@@ -518,12 +525,12 @@ function MovesView({
   const [showRare, setShowRare] = useState(false);
 
   const relevantMoves = useMemo(
-    () => (isUserTurn ? [] : positionMoves.filter((m) => m.games >= minGames)),
+    () => (isUserTurn ? [] : positionMoves.filter((m) => m.inRepertoire || m.games >= minGames)),
     [isUserTurn, positionMoves, minGames],
   );
 
   const rareMoves = useMemo(
-    () => (isUserTurn ? [] : positionMoves.filter((m) => m.games < minGames)),
+    () => (isUserTurn ? [] : positionMoves.filter((m) => !m.inRepertoire && m.games < minGames)),
     [isUserTurn, positionMoves, minGames],
   );
 
@@ -608,7 +615,7 @@ function MovesView({
               <Text fz="xs" c="dimmed" w={100} ta="center">
                 {t("Board.Practice.Build.Results")}
               </Text>
-              {(hasResponses || coverageLoading) && (
+              {(!isUserTurn || hasResponses || coverageLoading) && (
                 <Group gap={4} w={100} justify="center" wrap="nowrap">
                   <Text fz="xs" c="dimmed" ta="center">
                     {t("Board.Practice.Build.YourCoverage")}
@@ -635,6 +642,7 @@ function MovesView({
                   inRepertoire: true,
                   coverage: response.coverage,
                   path: response.childPath,
+                  annotations: response.annotations,
                 }}
                 halfMoves={response.halfMoves}
                 onClick={() => goToMove(response.childPath)}
@@ -808,8 +816,13 @@ function MoveRow({
     >
       <Group justify="space-between" wrap="nowrap">
         <Group gap="sm" style={{ flex: 1, minWidth: 0 }}>
-          <Text fw={700} fz="sm">
+          <Text fw={700} fz="sm" c={ANNOTATION_INFO[move.annotations[0]]?.color }>
             {notation}
+            {move.annotations.length > 0 && (
+              <Text component="span" inherit fw={500} fz="sm">
+                {move.annotations.join("")}
+              </Text>
+            )}
           </Text>
           {move.inRepertoire && (
             <ThemeIcon size="xs" color="green" variant="transparent">
@@ -840,7 +853,7 @@ function MoveRow({
           </Tooltip>
           {showCoverage && (
             <Box w={100}>
-              {dimmed || move.games < minGames ? (
+              {dimmed ? (
                 <Tooltip label={t("Board.Practice.Build.RareTooltip")} withArrow>
                   <Text fz="xs" c="dimmed" ta="center">
                     N/A
