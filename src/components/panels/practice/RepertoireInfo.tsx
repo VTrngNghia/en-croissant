@@ -32,6 +32,7 @@ import { roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
 import {
   computeTreeCoverage,
+  PositionStats,
   fetchPositionMoves,
   findBiggestGap,
   findNextGap,
@@ -72,10 +73,7 @@ function RepertoireInfo() {
 
   const [coverageMap, setCoverageMap] = useState<Map<string, number>>(new Map());
   const [dbMovesMap, setDbMovesMap] = useState<
-    Map<
-      string,
-      { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
-    >
+    Map<string, { moves: PositionStats[]; total: number }>
   >(new Map());
   const [gamesMap, setGamesMap] = useState<Map<string, number>>(new Map());
   const [missingGamesMap, setMissingGamesMap] = useState<Map<string, number>>(new Map());
@@ -113,6 +111,9 @@ function RepertoireInfo() {
     }
     return movesMap;
   }, [boardStateMap, startNode, startPath]);
+
+  const dbMovesMapRef = useRef(dbMovesMap);
+  dbMovesMapRef.current = dbMovesMap;
 
   useEffect(() => {
     if (!referenceDb) return;
@@ -152,18 +153,26 @@ function RepertoireInfo() {
     firstCoverageRun.current = false;
     setCoverageLoading(true);
 
-    computeTreeCoverage(root, orientation, referenceDb, minGames, startPath, startStateMoves).then(
-      (result) => {
-        if (version === coverageVersionRef.current) {
-          setCoverageMap(result.coverageMap);
-          setGamesMap(result.gamesMap);
-          setMissingGamesMap(result.missingGamesMap);
-          setDbMovesMap(result.dbMovesMap);
-          setCoverageLoading(false);
-          store.getState().save(); // sets dirty to false
-        }
-      },
-    );
+    const existingCache = dbMovesMapRef.current;
+
+    computeTreeCoverage(
+      root,
+      orientation,
+      referenceDb,
+      minGames,
+      startPath,
+      startStateMoves,
+      existingCache.size > 0 ? existingCache : undefined,
+    ).then((result) => {
+      if (version === coverageVersionRef.current) {
+        setCoverageMap(result.coverageMap);
+        setGamesMap(result.gamesMap);
+        setMissingGamesMap(result.missingGamesMap);
+        setDbMovesMap(result.dbMovesMap);
+        setCoverageLoading(false);
+        store.getState().save();
+      }
+    });
   }, [referenceDb, minGames, orientation, dirty, root, startStateMoves]);
 
   const nodeToPath = useMemo(() => {
@@ -346,24 +355,24 @@ function RepertoireInfo() {
             <Stack gap={4}>
               {(orientation === "white"
                 ? [
-                  {
-                    name: "Italian Game",
-                    moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
-                  },
-                  {
-                    name: "Ruy Lopez",
-                    moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
-                  },
-                  { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
-                ]
+                    {
+                      name: "Italian Game",
+                      moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+                    },
+                    {
+                      name: "Ruy Lopez",
+                      moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
+                    },
+                    { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
+                  ]
                 : [
-                  { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
-                  { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
-                  {
-                    name: "Najdorf",
-                    moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
-                  },
-                ]
+                    { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
+                    { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
+                    {
+                      name: "Najdorf",
+                      moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
+                    },
+                  ]
               ).map((preset) => (
                 <Button
                   key={preset.name}
@@ -816,7 +825,7 @@ function MoveRow({
     >
       <Group justify="space-between" wrap="nowrap">
         <Group gap="sm" style={{ flex: 1, minWidth: 0 }}>
-          <Text fw={700} fz="sm" c={ANNOTATION_INFO[move.annotations[0]]?.color }>
+          <Text fw={700} fz="sm" c={ANNOTATION_INFO[move.annotations[0]]?.color}>
             {notation}
             {move.annotations.length > 0 && (
               <Text component="span" inherit fw={500} fz="sm">
