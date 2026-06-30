@@ -12,7 +12,7 @@ import {
 import { useToggle } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -150,6 +150,52 @@ function GameSelectorAccordion({
 
   const keyMap = useAtomValue(keyMapAtom);
   const { t } = useTranslation();
+
+  useEffect(() => {
+    if (!tabFile || tabFile.metadata.type === "repertoire") return;
+    let cancelled = false;
+
+    async function refresh() {
+      const metadata = unwrap(await commands.getFileMetadata(tabFile!.path));
+      if (cancelled) return;
+      const diskModified = metadata.last_modified;
+
+      if (diskModified !== tabFile!.lastModified) {
+        const count = unwrap(await commands.countPgnGames(tabFile!.path));
+        if (cancelled) return;
+
+        setCurrentTab((prev) => {
+          if (prev.gameOrigin.kind === "file" || prev.gameOrigin.kind === "temp_file") {
+            return {
+              ...prev,
+              gameOrigin: {
+                ...prev.gameOrigin,
+                file: {
+                  ...prev.gameOrigin.file,
+                  numGames: count,
+                  lastModified: diskModified,
+                },
+              },
+            };
+          }
+          return prev;
+        });
+
+        if (!dirty) {
+          const [pgn] = unwrap(await commands.readGames(tabFile!.path, gameNumber, gameNumber));
+          if (!cancelled && pgn) {
+            const tree = await parsePGN(pgn);
+            setState(tree);
+          }
+        }
+      }
+    }
+
+    refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [tabFile?.path, gameNumber]);
 
   useHotkeys(
     keyMap.NEXT_GAME.keys,
