@@ -44,6 +44,9 @@ export async function openFile(
             pgn = unwrap(await commands.readGames(file, gameNumber, gameNumber))[0];
         }
 
+        const metadata = unwrap(await commands.getFileMetadata(file));
+        const lastModified = metadata.last_modified;
+
         fileInfo = {
             type: "file" as const,
             metadata: {
@@ -53,7 +56,7 @@ export async function openFile(
             name: file,
             path: file,
             numGames: count,
-            lastModified: new Date().getUTCSeconds(),
+            lastModified,
         };
 
         if (pgn) {
@@ -88,7 +91,6 @@ export async function openFile(
             gameNumber,
         },
     });
-
     if (fileInfo.metadata.type === "repertoire") {
         store.set(tabFamily(id), "practice");
     }
