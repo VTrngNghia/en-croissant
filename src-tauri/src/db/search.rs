@@ -232,6 +232,18 @@ pub struct ProgressPayload {
     pub finished: bool,
 }
 
+fn limited_rayon_pool() -> rayon::ThreadPool {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    let threads = if cores > 4 { cores - 4 } else { 1 };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap()
+}
+
+
 #[tauri::command]
 #[specta::specta]
 pub async fn search_position(
@@ -419,7 +431,9 @@ pub async fn search_position(
         }
     };
 
-    mmap_index.par_iter().for_each(process_entry);
+    limited_rayon_pool().install(|| {
+        mmap_index.par_iter().for_each(process_entry);
+    });
 
     let openings: Vec<PositionStats> = openings
         .into_iter()
@@ -541,7 +555,9 @@ pub async fn is_position_in_db(
         }
     };
 
-    let exists = mmap_index.par_iter().any(check_entry);
+    let exists = limited_rayon_pool().install(|| {
+        mmap_index.par_iter().any(check_entry)
+    });
 
     info!("finished search in {:?}", start.elapsed());
 
