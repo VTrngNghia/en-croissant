@@ -19,51 +19,81 @@ export type PositionMove = {
     annotations: Annotation[];
 };
 
+export type PositionStats = {
+    move: string;
+    white: number;
+    draw: number;
+    black: number;
+};
+
+const fenCache = new Map<
+    string,
+    Promise<{
+        moves: PositionStats[];
+        total: number;
+    }>
+>();
+
 export async function fetchPositionMoves(
     dbPath: string,
     fen: string,
 ): Promise<{
-    moves: { move: string; white: number; draw: number; black: number }[];
+    moves: PositionStats[];
     total: number;
 }> {
-    try {
-        const [openings] = await searchPosition(
-            {
-                path: dbPath,
-                type: "exact",
-                fen,
-                color: "white",
-                player: null,
-                result: "any",
-            } as LocalOptions,
-            "coverage-calc",
-        );
-        const summary = openings.find((op) => op.move === "*");
-        const moves = openings
-            .filter((op) => op.move !== "*")
-            .map((op) => ({
-                move: op.move,
-                white: op.white,
-                draw: op.draw,
-                black: op.black,
-            }));
-        const gamesEndingHere = summary ? summary.white + summary.draw + summary.black : 0;
-        const gamesContinuing = moves.reduce((acc, m) => acc + m.white + m.draw + m.black, 0);
-        return { moves, total: gamesEndingHere + gamesContinuing };
-    } catch {
-        return { moves: [], total: 0 };
+    const cacheKey = `${dbPath}|${fen}`;
+    const existing = fenCache.get(cacheKey);
+    if (existing) {
+        return existing;
     }
+    const promise = (async () => {
+        try {
+            const [openings] = await searchPosition(
+                {
+                    path: dbPath,
+                    type: "exact",
+                    fen,
+                    color: "white",
+                    player: null,
+                    result: "any",
+                } as LocalOptions,
+                "coverage-calc",
+            );
+            const summary = openings.find((op) => op.move === "*");
+            const moves = openings
+                .filter((op) => op.move !== "*")
+                .map((op) => ({
+                    move: op.move,
+                    white: op.white,
+                    draw: op.draw,
+                    black: op.black,
+                }));
+            const gamesEndingHere = summary ? summary.white + summary.draw + summary.black : 0;
+            const gamesContinuing = moves.reduce((acc, m) => acc + m.white + m.draw + m.black, 0);
+            const result = { moves, total: gamesEndingHere + gamesContinuing };
+            return result;
+        } catch {
+            return { moves: [], total: 0 };
+        }
+    })();
+    fenCache.set(cacheKey, promise);
+    return promise;
 }
 
 type DbCache = Map<
     string,
     {
-        moves: { move: string; white: number; draw: number; black: number }[];
+        moves: PositionStats[];
         total: number;
     }
 >;
 
-async function buildDbCache(root: TreeNode, startPath: number[], dbPath: string): Promise<DbCache> {
+async function buildDbCache(
+    root: TreeNode,
+    startPath: number[],
+    dbPath: string,
+    existingDbMovesMap?: DbCache,
+): Promise<DbCache> {
     const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
 
     const fenSet = new Set<string>();
@@ -75,12 +105,23 @@ async function buildDbCache(root: TreeNode, startPath: number[], dbPath: string)
     }
     const fenList = [...fenSet];
 
+    const cachedFens = new Set<string>();
     const cache: DbCache = new Map();
+    if (existingDbMovesMap) {
+        for (const fen of fenList) {
+            const existing = existingDbMovesMap.get(fen);
+            if (existing) {
+                cachedFens.add(fen);
+                cache.set(fen, existing); // reuse existing data
+            }
+        }
+    }
 
-    for (let i = 0; i < fenList.length; i++) {
-        const fen = fenList[i];
+    const fensToFetch = fenList.filter((f) => !cachedFens.has(f));
+
+    for (let i = 0; i < fensToFetch.length; i++) {
+        const fen = fensToFetch[i];
         const data = await fetchPositionMoves(dbPath, fen);
-
         const enrichedMoves = data.moves.map((m) => ({
             move: m.move,
             white: m.white,
@@ -192,18 +233,12 @@ function buildPathMaps(
     coverageMap: Map<string, number>;
     gamesMap: Map<string, number>;
     missingGamesMap: Map<string, number>;
-    dbMovesMap: Map<
-        string,
-        { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
-    >;
+    dbMovesMap: Map<string, { moves: PositionStats[]; total: number }>;
 } {
     const coverageMap = new Map<string, number>();
     const gamesMap = new Map<string, number>();
     const missingGamesMap = new Map<string, number>();
-    const dbMovesMap = new Map<
-        string,
-        { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
-    >();
+    const dbMovesMap = new Map<string, { moves: PositionStats[]; total: number }>();
 
     const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
     function walk(node: TreeNode, path: number[]) {
@@ -238,26 +273,21 @@ export async function computeTreeCoverage(
     minGames: number,
     startPath: number[],
     stateMoves: Map<string, Map<string, string>>,
+    existingDbMovesMap?: DbCache,
 ): Promise<{
     coverageMap: Map<string, number>;
     gamesMap: Map<string, number>;
     missingGamesMap: Map<string, number>;
-    dbMovesMap: Map<
-        string,
-        { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
-    >;
+    dbMovesMap: DbCache;
 }> {
-    const dbCache = await buildDbCache(root, startPath, dbPath);
+    const dbCache = await buildDbCache(root, startPath, dbPath, existingDbMovesMap);
 
     const memo = new Map<string, { coverage: number; missing: number }>();
-    let computedCount = 0;
     for (const fen of dbCache.keys()) {
         computeCoverageForFen(fen, dbCache, stateMoves, userColor, minGames, memo);
-        computedCount++;
     }
 
     const pathMaps = buildPathMaps(root, startPath, memo, dbCache);
-
     return pathMaps;
 }
 
