@@ -42,6 +42,10 @@ import {
 import { getBoardState, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
 import { Annotation, ANNOTATION_INFO } from "@/utils/annotation";
+import { DbCache, loadCache, saveCache } from "@/utils/positionCache";
+import { commands } from "@/bindings";
+import { unwrap } from "@/utils/unwrap";
+import { getTabFile } from "@/utils/tabs";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
   const moveNum = Math.ceil(halfMoves / 2);
@@ -89,6 +93,9 @@ function RepertoireInfo() {
   const isEmptyTree = root.children.length === 0;
 
   const startNode = useMemo(() => getNodeAtPath(root, startPath), [root, startPath]);
+  const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastFingerprintRef = useRef<string>("");
+  const loadedCacheRef = useRef<DbCache | undefined>(undefined);
 
   const startStateMoves = useMemo(() => {
     const movesMap = new Map<string, Map<string, string>>();
@@ -115,6 +122,7 @@ function RepertoireInfo() {
   const dbMovesMapRef = useRef(dbMovesMap);
   dbMovesMapRef.current = dbMovesMap;
 
+  // On‑demand fetch for the current position (always show moves immediately)
   useEffect(() => {
     if (!referenceDb) return;
     const boardFen = getBoardState(currentNode.fen);
@@ -124,7 +132,7 @@ function RepertoireInfo() {
     fetchPositionMoves(referenceDb, boardFen)
       .then((data) => {
         setDbMovesMap((prev) => {
-          if (prev.has(boardFen)) return prev; // may have been filled by coverage meanwhile
+          if (prev.has(boardFen)) return prev;
           const next = new Map(prev);
           next.set(boardFen, data);
           return next;
@@ -134,6 +142,7 @@ function RepertoireInfo() {
       .catch(() => setCurrentPosLoading(false));
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
+  // Main coverage effect (with disk cache and periodic saves)
   useEffect(() => {
     if (!referenceDb) {
       setCoverageMap(new Map());
@@ -153,27 +162,81 @@ function RepertoireInfo() {
     firstCoverageRun.current = false;
     setCoverageLoading(true);
 
-    const existingCache = dbMovesMapRef.current;
+    (async () => {
+      const dbMeta = unwrap(await commands.getFileMetadata(referenceDb!));
+      const dbLastModified = dbMeta.last_modified;
 
-    computeTreeCoverage(
-      root,
-      orientation,
-      referenceDb,
-      minGames,
-      startPath,
-      startStateMoves,
-      existingCache.size > 0 ? existingCache : undefined,
-    ).then((result) => {
-      if (version === coverageVersionRef.current) {
+      const pgnPath = getTabFile(currentTab)?.path;
+
+      if (version !== coverageVersionRef.current) return;
+
+      let existingCache: DbCache | undefined;
+      if (pgnPath) {
+        if (!loadedCacheRef.current) {
+          loadedCacheRef.current = await loadCache(pgnPath, referenceDb!, dbLastModified);
+        }
+        existingCache = loadedCacheRef.current;
+      }
+      lastFingerprintRef.current = existingCache
+        ? JSON.stringify(Array.from(existingCache.keys()).sort())
+        : "";
+      if (version !== coverageVersionRef.current) return;
+      runCoverage(existingCache, dbLastModified);
+    })();
+
+    function runCoverage(existingCache: DbCache | undefined, dbLastModified: number) {
+      const pgnPath = getTabFile(currentTab)?.path;
+
+      const partialCacheRef = { current: existingCache ?? new Map() };
+
+      if (saveIntervalRef.current) clearInterval(saveIntervalRef.current);
+      if (pgnPath) {
+        saveIntervalRef.current = setInterval(() => {
+          const currentMap = partialCacheRef.current;
+          const fingerprint = JSON.stringify(Array.from(currentMap.keys()).sort());
+          if (fingerprint !== lastFingerprintRef.current) {
+            saveCache(pgnPath, referenceDb!, dbLastModified, currentMap);
+            lastFingerprintRef.current = fingerprint;
+          }
+        }, 10000);
+      }
+
+      computeTreeCoverage(
+        root,
+        orientation,
+        referenceDb!,
+        minGames,
+        startPath,
+        startStateMoves,
+        existingCache,
+        (partialCache) => {
+          partialCacheRef.current = partialCache;
+        },
+      ).then((result) => {
+        if (version !== coverageVersionRef.current) return;
+        if (saveIntervalRef.current) {
+          clearInterval(saveIntervalRef.current);
+          saveIntervalRef.current = null;
+        }
         setCoverageMap(result.coverageMap);
         setGamesMap(result.gamesMap);
         setMissingGamesMap(result.missingGamesMap);
         setDbMovesMap(result.dbMovesMap);
         setCoverageLoading(false);
         store.getState().save();
+        if (pgnPath) {
+          saveCache(pgnPath, referenceDb!, dbLastModified, result.dbMovesMap);
+        }
+      });
+    }
+
+    return () => {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current);
+        saveIntervalRef.current = null;
       }
-    });
-  }, [referenceDb, minGames, orientation, dirty, root, startStateMoves]);
+    };
+  }, [referenceDb, minGames, orientation, dirty, root, startStateMoves, currentTab]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();
@@ -214,7 +277,6 @@ function RepertoireInfo() {
     const allMoves: PositionMove[] = [];
     const seenSans = new Set<string>();
 
-    // Prepared moves (always available)
     for (const [san, targetPath] of transpositionMoves) {
       const dbMove = dbMoveMap.get(san);
       const games = dbMove ? dbMove.white + dbMove.draw + dbMove.black : 0;
@@ -238,7 +300,6 @@ function RepertoireInfo() {
       });
     }
 
-    // DB moves not in repertoire
     for (const dbMove of movesFromDb) {
       if (!seenSans.has(dbMove.move)) {
         const games = dbMove.white + dbMove.draw + dbMove.black;

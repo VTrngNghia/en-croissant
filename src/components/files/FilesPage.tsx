@@ -204,6 +204,7 @@ function FilesPage() {
     } else {
       await remove(selected.path);
       await remove(selected.path.replace(".pgn", ".info")).catch(() => {});
+      await remove(selected.path.replace(".pgn", ".movecache.json")).catch(() => {});
     }
 
     await mutate();

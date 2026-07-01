@@ -93,6 +93,7 @@ async function buildDbCache(
     startPath: number[],
     dbPath: string,
     existingDbMovesMap?: DbCache,
+    onProgress?: (currentMap: DbCache) => void,
 ): Promise<DbCache> {
     const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
 
@@ -112,15 +113,15 @@ async function buildDbCache(
             const existing = existingDbMovesMap.get(fen);
             if (existing) {
                 cachedFens.add(fen);
-                cache.set(fen, existing); // reuse existing data
+                cache.set(fen, existing);
             }
         }
     }
 
     const fensToFetch = fenList.filter((f) => !cachedFens.has(f));
+    let fetchCount = 0;
 
-    for (let i = 0; i < fensToFetch.length; i++) {
-        const fen = fensToFetch[i];
+    for (const fen of fensToFetch) {
         const data = await fetchPositionMoves(dbPath, fen);
         const enrichedMoves = data.moves.map((m) => ({
             move: m.move,
@@ -128,17 +129,16 @@ async function buildDbCache(
             draw: m.draw,
             black: m.black,
         }));
-        const total = data.total;
-        cache.set(fen, { moves: enrichedMoves, total });
+        cache.set(fen, { moves: enrichedMoves, total: data.total });
+        fetchCount++;
+        if (onProgress) {
+            onProgress(cache);
+        }
     }
+
     return cache;
 }
 
-/**
- * Compute coverage and missing games for a single board FEN.
- * Recurses into child FENs (which must already be in dbCache and stateMoves).
- * Results are stored in a Map so each FEN is processed only once.
- */
 function computeCoverageForFen(
     fen: string,
     dbCache: DbCache,
@@ -274,13 +274,14 @@ export async function computeTreeCoverage(
     startPath: number[],
     stateMoves: Map<string, Map<string, string>>,
     existingDbMovesMap?: DbCache,
+    onProgress?: (currentMap: DbCache) => void,
 ): Promise<{
     coverageMap: Map<string, number>;
     gamesMap: Map<string, number>;
     missingGamesMap: Map<string, number>;
     dbMovesMap: DbCache;
 }> {
-    const dbCache = await buildDbCache(root, startPath, dbPath, existingDbMovesMap);
+    const dbCache = await buildDbCache(root, startPath, dbPath, existingDbMovesMap, onProgress);
 
     const memo = new Map<string, { coverage: number; missing: number }>();
     for (const fen of dbCache.keys()) {
