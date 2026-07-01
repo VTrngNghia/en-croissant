@@ -372,6 +372,10 @@ function DirectoryNode({
             sourcePath.replace(".pgn", ".info"),
             targetPath.replace(".pgn", ".info"),
           ).catch(() => {});
+          await rename(
+            sourcePath.replace(".pgn", ".movecache.json"),
+            targetPath.replace(".pgn", ".movecache.json"),
+          ).catch(() => {});
         }
         await refreshDirectory();
         setExpandedIds((prev) => (prev.includes(targetId!) ? prev : [...prev, targetId!]));

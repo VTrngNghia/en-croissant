@@ -157,6 +157,10 @@ export function EditModal({
 
     await rename(metadata.path, newPGNPath);
     await rename(metadataPath.replace(".pgn", ".info"), newPGNPath.replace(".pgn", ".info"));
+    await rename(
+      metadata.path.replace(".pgn", ".movecache.json"),
+      newPGNPath.replace(".pgn", ".movecache.json"),
+    ).catch(() => {});
 
     mutate();
     setSelected((selected) =>
