@@ -152,7 +152,7 @@ function GameSelectorAccordion({
   const { t } = useTranslation();
 
   useEffect(() => {
-    if (!tabFile || tabFile.metadata.type === "repertoire") return;
+    if (!tabFile) return;
     let cancelled = false;
 
     async function refresh() {
