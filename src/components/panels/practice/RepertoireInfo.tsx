@@ -42,15 +42,33 @@ import {
 import { getBoardState, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
 import { Annotation, ANNOTATION_INFO } from "@/utils/annotation";
-import { DbCache, loadCache, saveCache } from "@/utils/positionCache";
+import { DbCache, FenCacheEntry, loadCache, saveCache } from "@/utils/positionCache";
 import { commands } from "@/bindings";
 import { unwrap } from "@/utils/unwrap";
 import { getTabFile } from "@/utils/tabs";
+import { parsePGN } from "@/utils/chess";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
   const moveNum = Math.ceil(halfMoves / 2);
   const isWhite = halfMoves % 2 === 1;
   return `${moveNum}${isWhite ? "." : "..."} ${san}`;
+}
+
+async function collectAllFensFromPgn(pgnPath: string): Promise<Set<string>> {
+  const numGames = unwrap(await commands.countPgnGames(pgnPath));
+  const allFens = new Set<string>();
+  for (let i = 0; i < numGames; i++) {
+    const [pgn] = unwrap(await commands.readGames(pgnPath, i, i));
+    if (!pgn) continue;
+    const tree = await parsePGN(pgn);
+    const stack: TreeNode[] = [tree.root];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      allFens.add(getBoardState(node.fen));
+      for (const child of node.children) stack.push(child);
+    }
+  }
+  return allFens;
 }
 
 function RepertoireInfo() {
@@ -142,7 +160,7 @@ function RepertoireInfo() {
       .catch(() => setCurrentPosLoading(false));
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
-  // Main coverage effect (with disk cache and periodic saves)
+  // Main coverage effect (with disk cache, periodic saves, and auto-pruning)
   useEffect(() => {
     if (!referenceDb) {
       setCoverageMap(new Map());
@@ -165,26 +183,46 @@ function RepertoireInfo() {
     (async () => {
       const dbMeta = unwrap(await commands.getFileMetadata(referenceDb!));
       const dbLastModified = dbMeta.last_modified;
-
       const pgnPath = getTabFile(currentTab)?.path;
 
-      if (version !== coverageVersionRef.current) return;
-
-      let existingCache: DbCache | undefined;
+      let pgnLastModified = 0;
       if (pgnPath) {
-        if (!loadedCacheRef.current) {
-          loadedCacheRef.current = await loadCache(pgnPath, referenceDb!, dbLastModified);
-        }
-        existingCache = loadedCacheRef.current;
+        const pgnMeta = unwrap(await commands.getFileMetadata(pgnPath));
+        pgnLastModified = pgnMeta.last_modified;
       }
+
+      if (!loadedCacheRef.current && pgnPath) {
+        const result = await loadCache(pgnPath, referenceDb!);
+        if (result) {
+          loadedCacheRef.current = result.map;
+
+          if (result.pgnLastModified !== pgnLastModified) {
+            const allFens = await collectAllFensFromPgn(pgnPath);
+            const prunedMap = new Map<string, FenCacheEntry>();
+            for (const [fen, entry] of loadedCacheRef.current) {
+              if (allFens.has(fen)) {
+                prunedMap.set(fen, entry);
+              }
+            }
+            loadedCacheRef.current = prunedMap;
+          }
+        }
+      }
+
+      const existingCache = loadedCacheRef.current;
       lastFingerprintRef.current = existingCache
         ? JSON.stringify(Array.from(existingCache.keys()).sort())
         : "";
+
       if (version !== coverageVersionRef.current) return;
-      runCoverage(existingCache, dbLastModified);
+      runCoverage(existingCache, dbLastModified, pgnLastModified);
     })();
 
-    function runCoverage(existingCache: DbCache | undefined, dbLastModified: number) {
+    function runCoverage(
+      existingCache: DbCache | undefined,
+      dbLastModified: number,
+      pgnLastModified: number,
+    ) {
       const pgnPath = getTabFile(currentTab)?.path;
 
       const partialCacheRef = { current: existingCache ?? new Map() };
@@ -195,7 +233,7 @@ function RepertoireInfo() {
           const currentMap = partialCacheRef.current;
           const fingerprint = JSON.stringify(Array.from(currentMap.keys()).sort());
           if (fingerprint !== lastFingerprintRef.current) {
-            saveCache(pgnPath, referenceDb!, dbLastModified, currentMap);
+            saveCache(pgnPath, referenceDb!, dbLastModified, pgnLastModified, currentMap);
             lastFingerprintRef.current = fingerprint;
           }
         }, 10000);
@@ -225,7 +263,8 @@ function RepertoireInfo() {
         setCoverageLoading(false);
         store.getState().save();
         if (pgnPath) {
-          saveCache(pgnPath, referenceDb!, dbLastModified, result.dbMovesMap);
+          saveCache(pgnPath, referenceDb!, dbLastModified, pgnLastModified, result.dbMovesMap);
+          loadedCacheRef.current = result.dbMovesMap;
         }
       });
     }
@@ -416,24 +455,24 @@ function RepertoireInfo() {
             <Stack gap={4}>
               {(orientation === "white"
                 ? [
-                    {
-                      name: "Italian Game",
-                      moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
-                    },
-                    {
-                      name: "Ruy Lopez",
-                      moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
-                    },
-                    { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
-                  ]
+                  {
+                    name: "Italian Game",
+                    moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+                  },
+                  {
+                    name: "Ruy Lopez",
+                    moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
+                  },
+                  { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
+                ]
                 : [
-                    { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
-                    { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
-                    {
-                      name: "Najdorf",
-                      moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
-                    },
-                  ]
+                  { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
+                  { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
+                  {
+                    name: "Najdorf",
+                    moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
+                  },
+                ]
               ).map((preset) => (
                 <Button
                   key={preset.name}
