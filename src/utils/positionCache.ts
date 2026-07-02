@@ -1,11 +1,9 @@
-import { commands } from "@/bindings";
-import { unwrap } from "@/utils/unwrap";
 import { readTextFile, writeTextFile, rename, remove, exists } from "@tauri-apps/plugin-fs";
 import type { PositionStats } from "./repertoire";
 
 const SCHEMA_VERSION = 1;
 
-type FenCacheEntry = {
+export type FenCacheEntry = {
     moves: PositionStats[];
     total: number;
 };
@@ -14,6 +12,7 @@ type CacheFile = {
     schemaVersion: number;
     dbPath: string;
     dbLastModified: number;
+    pgnLastModified: number; 
     data: Record<string, FenCacheEntry>;
 };
 
@@ -26,10 +25,9 @@ export function getCachePath(pgnPath: string): string {
 export async function loadCache(
     pgnPath: string,
     dbPath: string,
-    dbLastModified: number,
-): Promise<DbCache> {
+): Promise<{ map: DbCache; dbLastModified: number; pgnLastModified: number } | null> {
     const cachePath = getCachePath(pgnPath);
-    if (!(await exists(cachePath))) return new Map();
+    if (!(await exists(cachePath))) return null;
 
     try {
         const raw = await readTextFile(cachePath);
@@ -37,16 +35,15 @@ export async function loadCache(
 
         if (
             cache.schemaVersion !== SCHEMA_VERSION ||
-            cache.dbPath !== dbPath ||
-            cache.dbLastModified !== dbLastModified
+            cache.dbPath !== dbPath
         ) {
-            return new Map();
+            return null;
         }
 
         const map = new Map<string, FenCacheEntry>(Object.entries(cache.data));
-        return map;
+    return { map, dbLastModified: cache.dbLastModified, pgnLastModified: cache.pgnLastModified };
     } catch (err) {
-        return new Map();
+        return null;
     }
 }
 
@@ -58,10 +55,11 @@ export async function saveCache(
     pgnPath: string,
     dbPath: string,
     dbLastModified: number,
-    dataMap: Map<string, FenCacheEntry>,
+    pgnLastModified: number,  
+      dataMap: Map<string, FenCacheEntry>,
 ): Promise<void> {
     // Chain onto any in-progress save so writes are serialized, not concurrent.
-    const run = savingInFlight.then(() => doSaveCache(pgnPath, dbPath, dbLastModified, dataMap));
+    const run = savingInFlight.then(() => doSaveCache(pgnPath, dbPath, dbLastModified, pgnLastModified, dataMap));
     savingInFlight = run.catch(() => {
         // swallow here so the chain never breaks; the error is already logged below
     });
@@ -72,7 +70,8 @@ async function doSaveCache(
     pgnPath: string,
     dbPath: string,
     dbLastModified: number,
-    dataMap: Map<string, FenCacheEntry>,
+     pgnLastModified: number,  
+      dataMap: Map<string, FenCacheEntry>,
 ): Promise<void> {
     const cachePath = getCachePath(pgnPath);
     const tmpPath = `${cachePath}.tmp`;
@@ -88,6 +87,7 @@ async function doSaveCache(
             schemaVersion: SCHEMA_VERSION,
             dbPath,
             dbLastModified,
+            pgnLastModified,
             data,
         };
 
