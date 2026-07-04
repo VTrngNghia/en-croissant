@@ -36,6 +36,7 @@ import useSWR from "swr";
 import { getDatabases } from "@/utils/db";
 import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
+import { TreeNode } from "@/utils/treeReducer";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -147,55 +148,32 @@ function GameSelectorAccordion({
   const tabFile = getTabFile(currentTab);
   const gameNumber = getTabGameNumber(currentTab);
   const currentName = games.get(gameNumber) || "Untitled";
+  const rebuildAllFens = useStore(store, (s) => s.rebuildAllFens);
 
   const keyMap = useAtomValue(keyMapAtom);
   const { t } = useTranslation();
 
   useEffect(() => {
-    if (!tabFile) return;
+    if (!tabFile || tabFile.metadata.type !== "repertoire") return;
     let cancelled = false;
-
-    async function refresh() {
-      const metadata = unwrap(await commands.getFileMetadata(tabFile!.path));
-      if (cancelled) return;
-      const diskModified = metadata.last_modified;
-
-      if (diskModified !== tabFile!.lastModified) {
-        const count = unwrap(await commands.countPgnGames(tabFile!.path));
-        if (cancelled) return;
-
-        setCurrentTab((prev) => {
-          if (prev.gameOrigin.kind === "file" || prev.gameOrigin.kind === "temp_file") {
-            return {
-              ...prev,
-              gameOrigin: {
-                ...prev.gameOrigin,
-                file: {
-                  ...prev.gameOrigin.file,
-                  numGames: count,
-                  lastModified: diskModified,
-                },
-              },
-            };
-          }
-          return prev;
-        });
-
-        if (!dirty) {
-          const [pgn] = unwrap(await commands.readGames(tabFile!.path, gameNumber, gameNumber));
-          if (!cancelled && pgn) {
-            const tree = await parsePGN(pgn);
-            setState(tree);
-          }
-        }
+    const rebuild = async () => {
+      const numGames = unwrap(await commands.countPgnGames(tabFile.path));
+      const trees: { root: TreeNode; startPath: number[] }[] = [];
+      for (let i = 0; i < numGames; i++) {
+        const [pgn] = unwrap(await commands.readGames(tabFile.path, i, i));
+        if (!pgn) continue;
+        const tree = await parsePGN(pgn);
+        trees.push({ root: tree.root, startPath: tree.headers.start || [] });
       }
-    }
-
-    refresh();
+      if (!cancelled) {
+        rebuildAllFens(trees);
+      }
+    };
+    rebuild();
     return () => {
       cancelled = true;
     };
-  }, [tabFile?.path, gameNumber]);
+  }, [tabFile?.path, tabFile?.numGames]);
 
   useHotkeys(
     keyMap.NEXT_GAME.keys,
@@ -258,6 +236,16 @@ function GameSelectorAccordion({
       };
     });
     setGames(new Map());
+
+    const numGames = unwrap(await commands.countPgnGames(filePath));
+    const trees: { root: TreeNode; startPath: number[] }[] = [];
+    for (let i = 0; i < numGames; i++) {
+      const [pgn] = unwrap(await commands.readGames(filePath, i, i));
+      if (!pgn) continue;
+      const tree = await parsePGN(pgn);
+      trees.push({ root: tree.root, startPath: tree.headers.start || [] });
+    }
+    rebuildAllFens(trees);
   }
 
   return (

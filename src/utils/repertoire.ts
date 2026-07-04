@@ -122,7 +122,14 @@ async function buildDbCache(
     let fetchCount = 0;
 
     for (const fen of fensToFetch) {
+        const start = performance.now();
+        console.log(
+            `leuleu buildDbCache: fetching moves for ${fen} (${fetchCount + 1}/${fensToFetch.length})`,
+        );
         const data = await fetchPositionMoves(dbPath, fen);
+        console.log(
+            `leuleu buildDbCache: fetched moves for ${fen} in ${(performance.now() - start).toFixed(2)} ms`,
+        );
         const enrichedMoves = data.moves.map((m) => ({
             move: m.move,
             white: m.white,
