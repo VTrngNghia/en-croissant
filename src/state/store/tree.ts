@@ -23,6 +23,7 @@ import {
     treeIteratorMainLine,
     buildTranspositionMaps,
     getBoardState,
+    collectAllFensFromTrees,
 } from "@/utils/treeReducer";
 
 export interface TreeStoreState extends TreeState {
@@ -71,6 +72,8 @@ export interface TreeStoreState extends TreeState {
 
     clearShapes: () => void;
 
+    rebuildAllFens: (trees: { root: TreeNode; startPath: number[] }[]) => void;
+    clearAllFens: () => void;
     setFen: (fen: string) => void;
 
     addAnalysis: (
@@ -142,6 +145,18 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             }));
         },
 
+        rebuildAllFens: (trees) =>
+            set((state) => ({
+                ...state,
+                allFens: collectAllFensFromTrees(trees),
+            })),
+
+        clearAllFens: () =>
+            set((state) => ({
+                ...state,
+                allFens: new Set(),
+            })),
+
         setFen: (fen) =>
             set(
                 produce((state) => {
@@ -152,6 +167,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             ),
 
         goToNext: () => {
+            console.log("leuleu goToNext");
             set((state) => {
                 const { practicePath } = state;
                 const node = getNodeAtPath(state.root, state.position);
@@ -192,6 +208,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             });
         },
         goToPrevious: () => {
+            console.log("leuleu goToPrevious");
             set((state) => ({
                 position: state.position.slice(0, -1),
             }));
@@ -226,6 +243,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             ),
 
         makeMove: ({ payload, changePosition, mainline, clock, changeHeaders = true }) => {
+            console.log("leuleu makeMove", payload);
             set(
                 produce((state) => {
                     if (typeof payload === "string") {
@@ -257,7 +275,8 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 }),
             ),
 
-        makeMoves: ({ payload, mainline, changeHeaders = true }) =>
+        makeMoves: ({ payload, mainline, changeHeaders = true }) => {
+            console.log("leuleu makeMoves", payload);
             set(
                 produce((state) => {
                     state.dirty = true;
@@ -278,8 +297,10 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                         });
                     }
                 }),
-            ),
-        goToEnd: () =>
+            );
+        },
+        goToEnd: () => {
+            console.log("leuleu goToEnd");
             set(
                 produce((state) => {
                     const endPosition: number[] = [];
@@ -290,17 +311,22 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     }
                     state.position = endPosition;
                 }),
-            ),
-        goToStart: () =>
+            );
+        },
+        goToStart: () => {
+            console.log("leuleu goToStart");
             set((state) => ({
                 ...state,
                 position: state.headers.start || [],
-            })),
-        goToMove: (move) =>
+            }));
+        },
+        goToMove: (move) => {
+            console.log("leuleu goToMove", move);
             set((state) => ({
                 ...state,
                 position: move,
-            })),
+            }));
+        },
         goToBranchStart: () => {
             set(
                 produce((state) => {
@@ -406,13 +432,15 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 }),
             ),
 
-        deleteMove: (path) =>
+        deleteMove: (path) => {
+            console.log("leuleu deleteMove", path);
             set(
                 produce((state) => {
                     state.dirty = true;
                     deleteMove(state, path ?? state.position);
                 }),
-            ),
+            );
+        },
         promoteVariation: (path) =>
             set(
                 produce((state) => {

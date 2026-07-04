@@ -12,6 +12,7 @@ export interface TreeState {
     dirty: boolean;
     report: ReportState;
     boardStateMap: Record<string, { node: TreeNode; path: number[] }[]>;
+    allFens: Set<string>;
 }
 
 export interface TreeNode {
@@ -106,6 +107,7 @@ export function defaultTree(fen?: string): TreeState {
             inProgress: false,
         },
         boardStateMap: {},
+        allFens: new Set(),
     };
 }
 
@@ -207,4 +209,20 @@ export interface ReportState {
 
 export function getBoardState(fen: string): string {
     return fen.split(" ").slice(0, 4).join(" ");
+}
+
+export function collectAllFensFromTrees(
+    trees: { root: TreeNode; startPath: number[] }[],
+): Set<string> {
+    const allFens = new Set<string>();
+    for (const { root, startPath } of trees) {
+        const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
+        const stack: TreeNode[] = [startNode];
+        while (stack.length > 0) {
+            const node = stack.pop()!;
+            allFens.add(getBoardState(node.fen));
+            for (const child of node.children) stack.push(child);
+        }
+    }
+    return allFens;
 }

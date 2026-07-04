@@ -23,7 +23,15 @@ import {
   IconPlayerPlay,
 } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  SetStateAction,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -42,33 +50,15 @@ import {
 import { getBoardState, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
 import { Annotation, ANNOTATION_INFO } from "@/utils/annotation";
-import { DbCache, FenCacheEntry, loadCache, saveCache } from "@/utils/positionCache";
+import { DbCache, loadCache, saveCache } from "@/utils/positionCache";
 import { commands } from "@/bindings";
 import { unwrap } from "@/utils/unwrap";
 import { getTabFile } from "@/utils/tabs";
-import { parsePGN } from "@/utils/chess";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
   const moveNum = Math.ceil(halfMoves / 2);
   const isWhite = halfMoves % 2 === 1;
   return `${moveNum}${isWhite ? "." : "..."} ${san}`;
-}
-
-async function collectAllFensFromPgn(pgnPath: string): Promise<Set<string>> {
-  const numGames = unwrap(await commands.countPgnGames(pgnPath));
-  const allFens = new Set<string>();
-  for (let i = 0; i < numGames; i++) {
-    const [pgn] = unwrap(await commands.readGames(pgnPath, i, i));
-    if (!pgn) continue;
-    const tree = await parsePGN(pgn);
-    const stack: TreeNode[] = [tree.root];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      allFens.add(getBoardState(node.fen));
-      for (const child of node.children) stack.push(child);
-    }
-  }
-  return allFens;
 }
 
 function RepertoireInfo() {
@@ -78,6 +68,7 @@ function RepertoireInfo() {
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const position = useStore(store, (s) => s.position);
+  const allFens = useStore(store, (s) => s.allFens);
   const currentNode = useStore(store, (s) => s.currentNode());
   const goToMove = useStore(store, (s) => s.goToMove);
   const makeMove = useStore(store, (s) => s.makeMove);
@@ -111,9 +102,12 @@ function RepertoireInfo() {
   const isEmptyTree = root.children.length === 0;
 
   const startNode = useMemo(() => getNodeAtPath(root, startPath), [root, startPath]);
-  const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastFingerprintRef = useRef<string>("");
+
   const loadedCacheRef = useRef<DbCache | undefined>(undefined);
+  const dbMovesMapRef = useRef(dbMovesMap);
+  dbMovesMapRef.current = dbMovesMap;
+  const cacheReadyRef = useRef(false);
+  const saveInProgressRef = useRef(false);
 
   const startStateMoves = useMemo(() => {
     const movesMap = new Map<string, Map<string, string>>();
@@ -137,10 +131,7 @@ function RepertoireInfo() {
     return movesMap;
   }, [boardStateMap, startNode, startPath]);
 
-  const dbMovesMapRef = useRef(dbMovesMap);
-  dbMovesMapRef.current = dbMovesMap;
-
-  // On‑demand fetch for the current position (always show moves immediately)
+  // ──── On‑demand fetch for current position ────
   useEffect(() => {
     if (!referenceDb) return;
     const boardFen = getBoardState(currentNode.fen);
@@ -155,89 +146,135 @@ function RepertoireInfo() {
           next.set(boardFen, data);
           return next;
         });
+        if (loadedCacheRef.current) {
+          loadedCacheRef.current.set(boardFen, data);
+        }
         setCurrentPosLoading(false);
       })
       .catch(() => setCurrentPosLoading(false));
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
-  // Main coverage effect (with disk cache, periodic saves, and auto-pruning)
+  useEffect(() => {
+    loadedCacheRef.current = undefined;
+    cacheReadyRef.current = false;
+  }, [referenceDb]);
+
+  // ──── Disk cache loading ────
+  useEffect(() => {
+    if (!referenceDb) return;
+    const pgnPath = getTabFile(currentTab)?.path;
+    if (!pgnPath) return;
+
+    let cancelled = false;
+    (async () => {
+      if (!loadedCacheRef.current) {
+        const result = await loadCache(pgnPath, referenceDb);
+        if (!cancelled) {
+          loadedCacheRef.current = result?.map ?? new Map();
+        }
+      }
+      cacheReadyRef.current = true;
+      lastFingerprintRef.current =
+        loadedCacheRef.current!.size > 0
+          ? JSON.stringify(Array.from(loadedCacheRef.current!.keys()).sort())
+          : "";
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [referenceDb, currentTab]);
+
+  // ──── Periodic save to disk ────
+  const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastFingerprintRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!referenceDb) return;
+    const pgnPath = getTabFile(currentTab)?.path;
+    if (!pgnPath) return;
+
+    async function getDbLastModified() {
+      const meta = unwrap(await commands.getFileMetadata(referenceDb!));
+      return meta.last_modified;
+    }
+
+    let dbLastModified = 0;
+
+    const interval = setInterval(async () => {
+      if (!cacheReadyRef.current || saveInProgressRef.current || !loadedCacheRef.current) return;
+      const currentMap = loadedCacheRef.current;
+      const newFingerprint = JSON.stringify(Array.from(currentMap.keys()).sort());
+      if (newFingerprint === lastFingerprintRef.current) return;
+
+      saveInProgressRef.current = true;
+      try {
+        if (dbLastModified === 0) {
+          dbLastModified = await getDbLastModified();
+        }
+        await saveCache(pgnPath, referenceDb, dbLastModified, currentMap, allFens);
+        lastFingerprintRef.current = newFingerprint;
+      } finally {
+        saveInProgressRef.current = false;
+      }
+    }, 10000);
+
+    saveIntervalRef.current = interval;
+    return () => {
+      clearInterval(interval);
+    };
+  }, [referenceDb, currentTab, allFens]);
+
+  const setInitialState = () => {
+    setCoverageMap(new Map());
+    setGamesMap(new Map());
+    setMissingGamesMap(new Map());
+    setDbMovesMap(new Map());
+    setCoverageLoading(false);
+    firstCoverageRun.current = true;
+  };
+
+  const onCoverage = useCallback(
+    (version: number) =>
+      (result: {
+        coverageMap: SetStateAction<Map<string, number>>;
+        gamesMap: SetStateAction<Map<string, number>>;
+        missingGamesMap: SetStateAction<Map<string, number>>;
+        dbMovesMap: DbCache;
+      }) => {
+        if (version !== coverageVersionRef.current) return;
+        setCoverageMap(result.coverageMap);
+        setGamesMap(result.gamesMap);
+        setMissingGamesMap(result.missingGamesMap);
+        setDbMovesMap(result.dbMovesMap);
+        setCoverageLoading(false);
+        store.getState().save();
+        loadedCacheRef.current = result.dbMovesMap;
+      },
+    [],
+  );
+
+  // ──── Coverage computation ────
   useEffect(() => {
     if (!referenceDb) {
-      setCoverageMap(new Map());
-      setGamesMap(new Map());
-      setMissingGamesMap(new Map());
-      setDbMovesMap(new Map());
-      setCoverageLoading(false);
-      firstCoverageRun.current = true;
+      setInitialState();
       return;
     }
 
-    if (!dirty && !firstCoverageRun.current) {
-      return;
-    }
+    if (!dirty && !firstCoverageRun.current) return;
 
     const version = ++coverageVersionRef.current;
     firstCoverageRun.current = false;
     setCoverageLoading(true);
 
     (async () => {
-      const dbMeta = unwrap(await commands.getFileMetadata(referenceDb!));
-      const dbLastModified = dbMeta.last_modified;
-      const pgnPath = getTabFile(currentTab)?.path;
-
-      let pgnLastModified = 0;
-      if (pgnPath) {
-        const pgnMeta = unwrap(await commands.getFileMetadata(pgnPath));
-        pgnLastModified = pgnMeta.last_modified;
+      // Wait until the disk cache is ready
+      while (!cacheReadyRef.current) {
+        await new Promise((r) => setTimeout(r, 50));
       }
-
-      if (!loadedCacheRef.current && pgnPath) {
-        const result = await loadCache(pgnPath, referenceDb!);
-        if (result) {
-          loadedCacheRef.current = result.map;
-
-          if (result.pgnLastModified !== pgnLastModified) {
-            const allFens = await collectAllFensFromPgn(pgnPath);
-            const prunedMap = new Map<string, FenCacheEntry>();
-            for (const [fen, entry] of loadedCacheRef.current) {
-              if (allFens.has(fen)) {
-                prunedMap.set(fen, entry);
-              }
-            }
-            loadedCacheRef.current = prunedMap;
-          }
-        }
-      }
-
-      const existingCache = loadedCacheRef.current;
-      lastFingerprintRef.current = existingCache
-        ? JSON.stringify(Array.from(existingCache.keys()).sort())
-        : "";
-
       if (version !== coverageVersionRef.current) return;
-      runCoverage(existingCache, dbLastModified, pgnLastModified);
-    })();
 
-    function runCoverage(
-      existingCache: DbCache | undefined,
-      dbLastModified: number,
-      pgnLastModified: number,
-    ) {
-      const pgnPath = getTabFile(currentTab)?.path;
-
-      const partialCacheRef = { current: existingCache ?? new Map() };
-
-      if (saveIntervalRef.current) clearInterval(saveIntervalRef.current);
-      if (pgnPath) {
-        saveIntervalRef.current = setInterval(() => {
-          const currentMap = partialCacheRef.current;
-          const fingerprint = JSON.stringify(Array.from(currentMap.keys()).sort());
-          if (fingerprint !== lastFingerprintRef.current) {
-            saveCache(pgnPath, referenceDb!, dbLastModified, pgnLastModified, currentMap);
-            lastFingerprintRef.current = fingerprint;
-          }
-        }, 10000);
-      }
+      const existingCache = loadedCacheRef.current ?? new Map();
 
       computeTreeCoverage(
         root,
@@ -248,34 +285,11 @@ function RepertoireInfo() {
         startStateMoves,
         existingCache,
         (partialCache) => {
-          partialCacheRef.current = partialCache;
+          loadedCacheRef.current = partialCache;
         },
-      ).then((result) => {
-        if (version !== coverageVersionRef.current) return;
-        if (saveIntervalRef.current) {
-          clearInterval(saveIntervalRef.current);
-          saveIntervalRef.current = null;
-        }
-        setCoverageMap(result.coverageMap);
-        setGamesMap(result.gamesMap);
-        setMissingGamesMap(result.missingGamesMap);
-        setDbMovesMap(result.dbMovesMap);
-        setCoverageLoading(false);
-        store.getState().save();
-        if (pgnPath) {
-          saveCache(pgnPath, referenceDb!, dbLastModified, pgnLastModified, result.dbMovesMap);
-          loadedCacheRef.current = result.dbMovesMap;
-        }
-      });
-    }
-
-    return () => {
-      if (saveIntervalRef.current) {
-        clearInterval(saveIntervalRef.current);
-        saveIntervalRef.current = null;
-      }
-    };
-  }, [referenceDb, minGames, orientation, dirty, root, startStateMoves, currentTab]);
+      ).then(onCoverage(version));
+    })();
+  }, [referenceDb, minGames, orientation, dirty, root, startStateMoves]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();
@@ -455,24 +469,24 @@ function RepertoireInfo() {
             <Stack gap={4}>
               {(orientation === "white"
                 ? [
-                  {
-                    name: "Italian Game",
-                    moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
-                  },
-                  {
-                    name: "Ruy Lopez",
-                    moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
-                  },
-                  { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
-                ]
+                    {
+                      name: "Italian Game",
+                      moves: ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+                    },
+                    {
+                      name: "Ruy Lopez",
+                      moves: ["e4", "e5", "Nf3", "Nc6", "Bb5"],
+                    },
+                    { name: "Catalan", moves: ["d4", "Nf6", "c4", "e6", "g3"] },
+                  ]
                 : [
-                  { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
-                  { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
-                  {
-                    name: "Najdorf",
-                    moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
-                  },
-                ]
+                    { name: "French Defense", moves: ["e4", "e6", "d4", "d5"] },
+                    { name: "King's Indian", moves: ["d4", "Nf6", "c4", "g6"] },
+                    {
+                      name: "Najdorf",
+                      moves: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"],
+                    },
+                  ]
               ).map((preset) => (
                 <Button
                   key={preset.name}
